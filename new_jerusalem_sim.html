@@ -1,0 +1,1141 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1.0" />
+<title>New Jerusalem Impact Simulator (xkcd-style)</title>
+<style>
+  /* 
+  ============================================================
+  NEW JERUSALEM IMPACT SIMULATOR
+  ============================================================
+  ASSUMPTIONS, CONSTANTS, CITATIONS, NUMBERS:
+  
+  Earth model (spherical, layered). Values are widely cited averages from geophysics.
+  - Mean Earth radius: Re ≈ 6,371 km. [PREM, Dziewonski & Anderson 1981; NASA Earth Fact Sheet]
+  - Crust: ~0–35 km depth (continental avg ~35 km). We'll use 35 km thickness.
+    => crust outer radius: 6371 km
+       crust inner radius: 6336 km
+  - Mantle (upper+lower mantle): ~35 km to ~2,890 km depth.
+    => mantle inner radius: 6371 - 2890 = 3481 km
+  - Outer core: ~2,890 km to ~5,150 km depth.
+    => outer core inner radius: 6371 - 5150 = 1221 km
+  - Inner core (solid): ~5,150 km to center.
+    => inner core radius: ~1221 km (from center).
+    These are broadly accepted seismological boundaries (Moho, CMB, ICB).
+  
+  New Jerusalem size (Revelation 21:16 describes a city ~12,000 stadia per side).
+  - Stadium length often taken ≈185 m.
+  - 12,000 stadia × 185 m ≈ 2,220,000 m ≈ 2,220 km.
+  We'll assume a cube of side L_nj = 2,200 km per side.
+  We'll clearly label this assumption in the UI.
+
+  Gravitational model:
+  - Treat Earth as fixed, at origin (0,0) in world km coordinates.
+  - Treat New Jerusalem as a point mass for gravity (no tidal breakup etc).
+  - Gravity formula: a = G * M_earth / r^2 (toward Earth's center).
+    G = 6.67430e-11 N·m²/kg².
+    Earth mass M_earth = 5.972e24 kg.
+    r in METERS.
+  
+  Coordinate / units:
+  - World coordinates are in km. Earth center is (0,0).
+  - New Jerusalem starts at (0, +384400 km). (Earth–Moon mean distance ~384,400 km)
+    [NASA Moon Fact Sheet]
+  - Velocity initial is 0.
+  
+  Integration:
+  - Semi-implicit Euler:
+      v += a * dt
+      x += v * dt
+    dt is simulated seconds.
+  
+  Impact detection:
+  - Earth surface radius Re_km = 6371 km.
+  - New Jerusalem cube is 2200 km tall. If cube center is at y, bottom face is y - 1100 km.
+  - Impact when (y_center - 1100 km) <= 6371 km.
+
+  Time scaling:
+  - We compress time with a slider. At max slider, we advance huge dt per frame so "fall" finishes in under ~20s screen time. Physics is still Newtonian gravity, but time dilation is cartoonishly high.
+
+  Camera:
+  - World units: km.
+  - Camera has center (camX, camY) and zoom = pixels per km.
+  - We start zoomed WAY OUT so you can actually see Earth (~6371 km radius) and the New Jerusalem (2200 km cube) separated by ~384,400 km.
+    Important fix: initial zoom = 0.001 px/km instead of 0.2 px/km.
+    At 0.001 px/km: 
+      - Earth radius (~6371 km) ≈ 6.371 px (tiny but visible as a dot/ring).
+      - Moon distance (~384,400 km) ≈ 384 px from center: fits on screen.
+  
+  Mouse wheel zooms in.
+  After impact, we lerp camera down toward the crash site so you can zoom in on the carnage.
+
+  UI:
+  - Play / Pause / Restart.
+  - Space toggles.
+  - Mouse wheel zoom.
+  - Readouts update live.
+
+  Visual style:
+  - grayscale + accent colors, xkcd "what if" annotation vibe.
+  
+  Legend + Disclaimer provided on screen.
+  ============================================================
+  */
+
+  :root {
+    --bg:#ffffff;
+    --ink:#000000;
+    --panel-bg:#f5f5f5;
+    --panel-border:#000;
+    --crust:#d9c7a1;
+    --mantle:#c77f3b;
+    --outercore:#ffb347;
+    --innercore:#ffd36b;
+    --earth-outline:#000000;
+    --cube-fill:#daa520;   /* goldenrod — richer metallic base */
+	--cube-stroke:#8b7500; /* dark gold outline */
+    --vel:#00aaff;
+    --acc:#ff0066;
+    --shock:#ff0000;
+    --grid:rgba(0,0,0,0.07);
+    --panel-text:#000;
+    --caption-text:#333;
+    --tiny-text:#555;
+    --border-radius:6px;
+    --font-stack:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
+  }
+
+  body {
+    background:var(--bg);
+    color:var(--ink);
+    font-family:var(--font-stack);
+    margin:0;
+    overflow:hidden;
+  }
+
+  #uiWrapper{
+    position:fixed;
+    top:10px;
+    left:10px;
+    background:var(--panel-bg);
+    border:1px solid var(--panel-border);
+    border-radius:var(--border-radius);
+    font-size:12px;
+    line-height:1.4;
+    padding:8px 10px;
+    max-width:240px;
+    box-shadow:2px 2px 0 rgba(0,0,0,0.2);
+    user-select:none;
+    z-index:10;
+  }
+
+  #uiWrapper h1{
+    margin:0 0 4px 0;
+    font-size:13px;
+    font-weight:600;
+  }
+
+  .row{
+    margin-bottom:6px;
+    display:flex;
+    flex-wrap:wrap;
+    gap:4px;
+    align-items:center;
+  }
+  button{
+    font-size:12px;
+    padding:3px 6px;
+    border:1px solid #000;
+    background:#fff;
+    border-radius:4px;
+    cursor:pointer;
+  }
+  button:active{
+    transform:translateY(1px);
+  }
+  label{
+    font-size:11px;
+  }
+  input[type=range]{
+    width:100%;
+  }
+  .readout{
+    border-top:1px solid #000;
+    padding-top:4px;
+    font-size:11px;
+    width:100%;
+  }
+  .readout div{
+    display:flex;
+    justify-content:space-between;
+    white-space:nowrap;
+  }
+  .readout div span.value{
+    font-weight:600;
+    margin-left:6px;
+  }
+
+  #legendWrapper{
+    position:fixed;
+    top:10px;
+    right:10px;
+    background:var(--panel-bg);
+    border:1px solid var(--panel-border);
+    border-radius:var(--border-radius);
+    font-size:11px;
+    line-height:1.4;
+    padding:8px 10px;
+    max-width:220px;
+    box-shadow:2px 2px 0 rgba(0,0,0,0.2);
+    user-select:none;
+    z-index:10;
+  }
+  #legendWrapper h2{
+    margin:0 0 4px 0;
+    font-size:12px;
+    font-weight:600;
+  }
+  .legend-row{
+    display:flex;
+    align-items:center;
+    gap:6px;
+    margin-bottom:3px;
+  }
+  .swatch{
+    width:14px;
+    height:10px;
+    border:1px solid #000;
+    flex-shrink:0;
+  }
+
+  #captionWrapper{
+    position:fixed;
+    left:50%;
+    bottom:10px;
+    transform:translateX(-50%);
+    background:var(--panel-bg);
+    border:1px solid var(--panel-border);
+    border-radius:var(--border-radius);
+    font-size:11px;
+    line-height:1.4;
+    padding:6px 8px;
+    max-width:360px;
+    box-shadow:2px 2px 0 rgba(0,0,0,0.2);
+    color:var(--caption-text);
+    user-select:none;
+    z-index:10;
+  }
+
+  #disclaimer{
+    position:fixed;
+    right:10px;
+    bottom:10px;
+    font-size:9px;
+    line-height:1.3;
+    color:var(--tiny-text);
+    background:rgba(255,255,255,0.6);
+    padding:4px 6px;
+    border-radius:4px;
+    border:1px solid rgba(0,0,0,0.3);
+    max-width:220px;
+    user-select:none;
+    z-index:10;
+  }
+
+  #simCanvas{
+    position:absolute;
+    left:0;
+    top:0;
+    width:100vw;
+    height:100vh;
+    background:#fff;
+    cursor:crosshair;
+  }
+
+  #hoverTooltip{
+    position:fixed;
+    pointer-events:none;
+    background:#fff;
+    border:1px solid #000;
+    border-radius:4px;
+    font-size:11px;
+    line-height:1.4;
+    padding:4px 6px;
+    box-shadow:2px 2px 0 rgba(0,0,0,0.2);
+    display:none;
+    white-space:nowrap;
+    background-image:repeating-linear-gradient(
+      -45deg,
+      rgba(0,0,0,0.03) 0px,
+      rgba(0,0,0,0.03) 4px,
+      rgba(255,255,255,0.03)4px,
+      rgba(255,255,255,0.03)8px
+    );
+    z-index:20;
+  }
+
+  .screenLabel{
+    position:fixed;
+    font-size:10px;
+    line-height:1.4;
+    color:#000;
+    background:rgba(255,255,255,0.8);
+    border:1px solid #000;
+    padding:2px 4px;
+    border-radius:3px;
+    pointer-events:none;
+    box-shadow:1px 1px 0 rgba(0,0,0,0.2);
+    z-index:5;
+  }
+
+  #earthLabels .screenLabel{
+    display:none;
+  }
+
+</style>
+</head>
+<body>
+<canvas id="simCanvas"></canvas>
+
+<div id="uiWrapper">
+  <h1>New Jerusalem Descent Sim</h1>
+  <div class="row">
+    <button id="playPauseBtn">Play</button>
+    <button id="restartBtn">Restart</button>
+  </div>
+  <div class="row" style="flex-direction:column;align-items:stretch;">
+    <label for="speedSlider">
+      Sim Speed (time accel)
+    </label>
+    <input id="speedSlider" type="range" min="1" max="200000" step="1" value="50000">
+    <div style="font-size:10px;color:#333;">
+      Faster =&nbsp;shorter fall time to impact (&lt;≈20 s at max).
+    </div>
+  </div>
+  <div class="readout" id="readout">
+    <div><span>Distance to center:</span><span class="value" id="rVal">--</span> km</div>
+    <div><span>Altitude above surface:</span><span class="value" id="altVal">--</span> km</div>
+    <div><span>Velocity:</span><span class="value" id="velVal">--</span> km/s</div>
+    <div><span>Gravity accel:</span><span class="value" id="accVal">--</span> m/s²</div>
+    <div><span>Elapsed sim time:</span><span class="value" id="timeVal">0</span> s</div>
+  </div>
+  <div style="font-size:10px;color:#333;margin-top:4px;">
+    Space: Play/Pause<br>
+    Mouse Wheel: Zoom<br>
+  </div>
+</div>
+
+<div id="legendWrapper">
+  <h2>Legend / Color Key</h2>
+  <div class="legend-row"><div class="swatch" style="background:var(--crust);"></div> <div>Crust (~0–35 km)</div></div>
+  <div class="legend-row"><div class="swatch" style="background:var(--mantle);"></div> <div>Mantle (~35–2,890 km)</div></div>
+  <div class="legend-row"><div class="swatch" style="background:var(--outercore);"></div> <div>Outer Core (~2,890–5,150 km)</div></div>
+  <div class="legend-row"><div class="swatch" style="background:var(--innercore);border-color:#000;"></div> <div>Inner Core (~5,150 km → center)</div></div>
+  <div class="legend-row"><div class="swatch" style="background:var(--cube-fill);border-color:var(--cube-stroke);"></div> <div>New Jerusalem (~2,200 km cube)</div></div>
+  <!-- <div class="legend-row"><div class="swatch" style="background:var(--vel);"></div> <div>Velocity vector</div></div> -->
+<div class="legend-row"><div class="swatch" style="background:var(--acc);"></div> <div>Acceleration vector</div></div>
+  <div class="legend-row"><div class="swatch" style="background:var(--shock);"></div> <div>Shock rings</div></div>
+  <div class="legend-row"><div class="swatch" style="background:var(--grid);border-color:#888;"></div> <div>Space gridlines</div></div>
+</div>
+
+<div id="captionWrapper">
+  <div id="impactCaption" style="display:none;font-weight:600;color:#000;margin-bottom:4px;">
+    RESULT: Planet-scale catastrophe/WWE style entrance into Olam HaBa
+  </div>
+  <div style="font-size:11px;">
+    Numerical values (distances, speeds, gravity) are calculated live using
+    point-mass gravity and a 2,200 km cube city starting from lunar distance.
+    <span style="color:#555;font-style:italic;">The angel who talked to me had a measuring rod of gold to measure the city and its gates and walls. The city has four equal sides, its length the same as its width, and he measured the city with his rod, twelve thousand stadia; its length and width and height are equal.</span>
+  </div>
+  <div id="funnyAfterImpact" style="display:none;margin-top:4px;color:#000;font-size:11px;">
+    Commentary: "Local real estate values: briefly high, then zero."
+  </div>
+</div>
+
+<div id="disclaimer">
+  Note: This is an idealized point-mass gravity model, no air resistance,
+  Earth is fixed/massive, New Jerusalem is rigid.
+  Please don’t panic.
+</div>
+
+<div id="hoverTooltip"></div>
+
+<!-- Screen-space labels for Earth layers when zoomed in -->
+<div id="earthLabels">
+  <div id="labelCrust" class="screenLabel">Crust (~0–35 km)</div>
+  <div id="labelMantle" class="screenLabel">Mantle (~35–2,890 km)</div>
+  <div id="labelOuterCore" class="screenLabel">Outer Core (~2,890–5,150 km)</div>
+  <div id="labelInnerCore" class="screenLabel">Inner Core (~5,150 km → center)</div>
+  <div id="labelEarthR" class="screenLabel">Earth radius ~6371 km</div>
+</div>
+
+<script>
+(function(){
+  "use strict";
+
+  /************************************************************
+   * CONSTANTS AND INITIAL STATE
+   ************************************************************/
+  const G = 6.67430e-11;           // m^3 / (kg s^2)
+  const EARTH_MASS = 5.972e24;     // kg
+  const EARTH_RADIUS_KM = 6371;    // km (mean Earth radius)
+
+  // Layer boundaries (km from center)
+	const CRUST_OUTER_R = EARTH_RADIUS_KM;           // 6371
+	const CRUST_INNER_R = EARTH_RADIUS_KM - 35;      // 6336
+	const MANTLE_INNER_R = EARTH_RADIUS_KM - 2890;   // 3481
+	const OUTER_CORE_INNER_R = EARTH_RADIUS_KM - 5150; // 1221
+	const INNER_CORE_INNER_R = 0;
+
+  // New Jerusalem cube ~2200 km per side
+  const NJ_SIZE_KM = 2200;
+  const NJ_HALF = NJ_SIZE_KM/2;
+
+  // Start at approx lunar distance
+  const INITIAL_Y_KM = 384400;
+
+  // Physics integration
+  const BASE_DT = 1/60; // base sim step in seconds
+  // Allow very large simulation steps per rendered frame so impact happens fast.
+  // 2000 s/frame at max speedSlider is intentionally ridiculous.
+  const MAX_FRAME_DT = 2000;
+
+  // Canvas / camera
+  const canvas = document.getElementById("simCanvas");
+  const ctx = canvas.getContext("2d");
+  let canvasW = window.innerWidth;
+  let canvasH = window.innerHeight;
+  canvas.width = canvasW;
+  canvas.height = canvasH;
+
+  // Camera:
+  // zoomed WAY OUT so Earth (~6 px radius) + city (~384 px away) both visible
+  let camX = 0;
+  let camY = INITIAL_Y_KM*0.5;
+  let zoom = 0.001;
+
+  // Drag-to-pan state
+  let isDragging = false;
+  let dragStartScreenX = 0;
+  let dragStartScreenY = 0;
+  let dragStartCamX = 0;
+  let dragStartCamY = 0;
+  let userPanned = false; // after user drags once, we stop auto-centering
+
+  // State
+  let state = {
+    y_km: INITIAL_Y_KM,
+    v_ms: 0,             // velocity (m/s), negative means falling toward Earth
+    elapsedSimTime: 0,   // s
+    running: false,
+    impacted: false,
+    impactInfo: null
+  };
+
+  // UI refs
+  const playPauseBtn = document.getElementById("playPauseBtn");
+  const restartBtn = document.getElementById("restartBtn");
+  const speedSlider = document.getElementById("speedSlider");
+  const rVal = document.getElementById("rVal");
+  const altVal = document.getElementById("altVal");
+  const velVal = document.getElementById("velVal");
+  const accVal = document.getElementById("accVal");
+  const timeVal = document.getElementById("timeVal");
+
+  const hoverTooltip = document.getElementById("hoverTooltip");
+  const impactCaption = document.getElementById("impactCaption");
+  const funnyAfterImpact = document.getElementById("funnyAfterImpact");
+
+  const labelCrust = document.getElementById("labelCrust");
+  const labelMantle = document.getElementById("labelMantle");
+  const labelOuterCore = document.getElementById("labelOuterCore");
+  const labelInnerCore = document.getElementById("labelInnerCore");
+  const labelEarthR = document.getElementById("labelEarthR");
+
+  // Mouse hover state
+  let mouseScreenX = 0;
+  let mouseScreenY = 0;
+  let mouseOverCube = false;
+
+  function worldToScreen(x_km, y_km){
+    return {
+      x:(x_km - camX)*zoom + canvasW*0.5,
+      y:(y_km - camY)*zoom + canvasH*0.5
+    };
+  }
+  function screenToWorld(sx, sy){
+    return {
+      x:(sx - canvasW*0.5)/zoom + camX,
+      y:(sy - canvasH*0.5)/zoom + camY
+    };
+  }
+
+  /************************************************************
+   * EARTH LAYER DRAW
+   ************************************************************/
+  function drawEarth(){
+  const crustCol   = getCSS('--crust');
+  const mantleCol  = getCSS('--mantle');
+  const outerCol   = getCSS('--outercore');
+  const innerCol   = getCSS('--innercore');
+  const outlineCol = getCSS('--earth-outline');
+
+  const c = worldToScreen(0,0);
+
+  // Helper: draw a filled ring between innerR_km and outerR_km
+  function fillShell(innerR_km, outerR_km, color){
+    const innerR_px = innerR_km * zoom;
+    const outerR_px = outerR_km * zoom;
+
+    ctx.beginPath();
+    // outer circle (clockwise)
+    ctx.arc(c.x, c.y, outerR_px, 0, Math.PI*2, false);
+    // inner circle (counterclockwise)
+    ctx.arc(c.x, c.y, innerR_px, 0, Math.PI*2, true);
+    ctx.fillStyle = color;
+    ctx.fill();
+  }
+
+  // --- draw from inside out ---
+
+  // Inner core: 0 -> 1221 km, so just a disk
+  fillShell(0, OUTER_CORE_INNER_R, innerCol);
+
+  // Outer core: 1221 -> 3481 km
+  fillShell(OUTER_CORE_INNER_R, MANTLE_INNER_R, outerCol);
+
+  // Mantle: 3481 -> 6336 km
+  fillShell(MANTLE_INNER_R, CRUST_INNER_R, mantleCol);
+
+  // Crust: 6336 -> 6371 km
+  fillShell(CRUST_INNER_R, CRUST_OUTER_R, crustCol);
+
+  // Surface outline so Earth pops even when zoomed out
+  ctx.beginPath();
+  ctx.arc(c.x, c.y, CRUST_OUTER_R*zoom, 0, Math.PI*2);
+  ctx.lineWidth = Math.max(1, 2);
+  ctx.strokeStyle = outlineCol;
+  ctx.stroke();
+}
+
+  // NEW: Color-coded callout labels for Crust / Mantle / etc., drawn in canvas space
+  function drawEarthLayerLabelsOnCanvas(){
+  // We pass a vertical "slot index" so we can stagger them.
+  // 0 = topmost label, then 1, 2, 3 lower down.
+  drawLayerCallout(CRUST_OUTER_R,      "Crust",      getCSS('--crust'),      0);
+  drawLayerCallout(CRUST_INNER_R,      "Mantle",     getCSS('--mantle'),     1);
+  drawLayerCallout(MANTLE_INNER_R,     "Outer Core", getCSS('--outercore'),  2);
+  drawLayerCallout(OUTER_CORE_INNER_R, "Inner Core", getCSS('--innercore'),  3);
+}
+
+  function drawLayerCallout(radiusKm, labelText, color, slotIndex){
+  const centerScr = worldToScreen(0,0);
+  const rPx = radiusKm * zoom;
+
+  // Anchor on the LEFT edge of that shell at the planet midline
+  const anchorX = centerScr.x - rPx;
+  const anchorY = centerScr.y;
+
+  // Stagger labels downward so they don't overlap.
+  // Each slot is ~16 px apart vertically.
+  const labelY = centerScr.y + (slotIndex * 16) - 24; // nudge up a bit overall
+  const labelX = anchorX - 60; // move label block further left from the planet
+
+  // We'll draw a bent leader line:
+  //   anchor -> elbow -> label box
+  // elbow x is a bit left of anchor, elbow y is the final labelY+5, so we get a readable "┐" shape
+  const elbowX = anchorX - 20;
+  const elbowY = labelY + 5;
+
+  ctx.save();
+  ctx.strokeStyle = color;
+  ctx.fillStyle = "#000";
+  ctx.lineWidth = 1;
+
+  // leader polyline
+  ctx.beginPath();
+  ctx.moveTo(anchorX, anchorY);
+  ctx.lineTo(elbowX, elbowY);
+  ctx.lineTo(labelX + 5, labelY + 5);
+  ctx.stroke();
+
+  // swatch box (color key box)
+  const swatchW = 10;
+  const swatchH = 10;
+  ctx.fillStyle = color;
+  ctx.fillRect(labelX - swatchW, labelY, swatchW, swatchH);
+  ctx.strokeStyle = "#000";
+  ctx.strokeRect(labelX - swatchW, labelY, swatchW, swatchH);
+
+  // text, right-aligned so it hugs just to the left of the swatch
+  ctx.fillStyle = "#000";
+  ctx.font = "11px "+getCSS('--font-stack');
+  ctx.textBaseline = "top";
+  ctx.textAlign = "right";
+
+  ctx.fillText(labelText, labelX - swatchW - 4, labelY - 1);
+
+  ctx.restore();
+}
+
+
+  /************************************************************
+   * GRIDLINES
+   ************************************************************/
+  function drawGrid(){
+    const gridColor = getCSS('--grid');
+    ctx.strokeStyle=gridColor;
+    ctx.lineWidth=1;
+
+    const targetPx = 80;
+    const stepKmGuess = targetPx/zoom;
+    const gridStepKm = niceStep(stepKmGuess);
+
+    const topLeft = screenToWorld(0,0);
+    const botRight = screenToWorld(canvasW,canvasH);
+    const minX = Math.min(topLeft.x, botRight.x);
+    const maxX = Math.max(topLeft.x, botRight.x);
+    const minY = Math.min(topLeft.y, botRight.y);
+    const maxY = Math.max(topLeft.y, botRight.y);
+
+    const startX = Math.floor(minX/gridStepKm)*gridStepKm;
+    const startY = Math.floor(minY/gridStepKm)*gridStepKm;
+
+    ctx.beginPath();
+    for(let gx = startX; gx<=maxX; gx+=gridStepKm){
+      const sA = worldToScreen(gx,minY);
+      const sB = worldToScreen(gx,maxY);
+      ctx.moveTo(sA.x, sA.y);
+      ctx.lineTo(sB.x, sB.y);
+    }
+    for(let gy = startY; gy<=maxY; gy+=gridStepKm){
+      const sA = worldToScreen(minX,gy);
+      const sB = worldToScreen(maxX,gy);
+      ctx.moveTo(sA.x, sA.y);
+      ctx.lineTo(sB.x, sB.y);
+    }
+    ctx.stroke();
+
+    // Label a couple gridlines
+    ctx.fillStyle="#000";
+    ctx.font="10px "+getCSS('--font-stack');
+    ctx.textBaseline="top";
+    for(let gx = startX; gx<=maxX; gx+=gridStepKm){
+      const sA = worldToScreen(gx,minY);
+      ctx.fillText(gx.toFixed(0)+" km", sA.x+2, sA.y+2);
+    }
+    for(let gy = startY; gy<=maxY; gy+=gridStepKm){
+      const sA = worldToScreen(minX,gy);
+      ctx.fillText(gy.toFixed(0)+" km", sA.x+2, sA.y+2);
+    }
+  }
+
+  function niceStep(val){
+    const pow10 = Math.pow(10, Math.floor(Math.log10(val)));
+    const mult = val / pow10;
+    let niceMult;
+    if(mult<1.5) niceMult=1;
+    else if(mult<3) niceMult=2;
+    else if(mult<7) niceMult=5;
+    else niceMult=10;
+    return niceMult*pow10;
+  }
+
+  /************************************************************
+   * NEW JERUSALEM CUBE DRAW
+   ************************************************************/
+  function drawNewJerusalem(){
+    const cubeColor = getCSS('--cube-fill');
+    const cubeStroke= getCSS('--cube-stroke');
+
+    // cube centered at (0, state.y_km)
+    const left_km   = -NJ_HALF;
+    const top_km    = state.y_km - NJ_HALF;
+    const right_km  =  NJ_HALF;
+    const bottom_km = state.y_km + NJ_HALF;
+
+    const p1 = worldToScreen(left_km, top_km);
+    const p2 = worldToScreen(right_km, bottom_km);
+
+    const wpx = p2.x - p1.x;
+    const hpx = p2.y - p1.y;
+
+    ctx.save();
+
+// Create a metallic gold gradient
+const gradient = ctx.createLinearGradient(p1.x, p1.y, p2.x, p2.y);
+gradient.addColorStop(0, "#fff4b3");   // bright highlight
+gradient.addColorStop(0.25, "#ffd700"); // rich gold
+gradient.addColorStop(0.5, "#daa520");  // deeper midtone
+gradient.addColorStop(0.75, "#b8860b"); // shaded edge
+gradient.addColorStop(1, "#604400");    // dark rim shadow
+
+ctx.fillStyle = gradient;
+ctx.strokeStyle = cubeStroke;
+ctx.lineWidth = mouseOverCube ? 2 : 1.5;
+ctx.beginPath();
+ctx.rect(p1.x, p1.y, wpx, hpx);
+ctx.fill();
+ctx.stroke();
+ctx.restore();
+
+
+    // Leader + label
+    ctx.fillStyle="#000";
+    ctx.font="11px "+getCSS('--font-stack');
+    ctx.textBaseline="bottom";
+    ctx.textAlign="left";
+
+    const labelPos = worldToScreen(NJ_HALF+200, state.y_km);
+
+    ctx.beginPath();
+    ctx.moveTo((p1.x+p2.x)/2,(p1.y+p2.y)/2);
+    ctx.lineTo(labelPos.x-5, labelPos.y);
+    ctx.strokeStyle="#000";
+    ctx.lineWidth=1;
+    ctx.stroke();
+
+    ctx.fillText("New Jerusalem (~2200 km cube)", labelPos.x, labelPos.y-2);
+  }
+
+  /************************************************************
+   * VECTORS: velocity & acceleration
+   ************************************************************/
+  function drawVectors(acc_ms2){
+  const velColor = getCSS('--vel');
+  const accColor = getCSS('--acc');
+
+  const centerScr = worldToScreen(0, state.y_km);
+
+  // --- HIDE VELOCITY VECTOR ---
+  // const v_kms = Math.abs(state.v_ms)/1000;
+  // const velLenPx = 20 + v_kms*5;
+  // const velDir = (state.v_ms<0)? -1 : 1;
+  // drawArrow(centerScr.x, centerScr.y,
+  //           centerScr.x, centerScr.y + velDir*velLenPx,
+  //           velColor, "Velocity");
+
+  // keep only acceleration arrow
+  const accLenPx = 20 + acc_ms2*0.5;
+  drawArrow(centerScr.x+15, centerScr.y,
+            centerScr.x+15, centerScr.y - accLenPx,
+            accColor, "Accel");
+}
+
+  function drawArrow(x1,y1,x2,y2,color,label){
+    ctx.save();
+    ctx.strokeStyle=color;
+    ctx.fillStyle=color;
+    ctx.lineWidth=1.5;
+    ctx.beginPath();
+    ctx.moveTo(x1,y1);
+    ctx.lineTo(x2,y2);
+    ctx.stroke();
+
+    const angle=Math.atan2(y2-y1,x2-x1);
+    const headLen=6;
+    ctx.beginPath();
+    ctx.moveTo(x2,y2);
+    ctx.lineTo(x2 - headLen*Math.cos(angle - Math.PI/6),
+               y2 - headLen*Math.sin(angle - Math.PI/6));
+    ctx.lineTo(x2 - headLen*Math.cos(angle + Math.PI/6),
+               y2 - headLen*Math.sin(angle + Math.PI/6));
+    ctx.closePath();
+    ctx.fill();
+
+    ctx.font="10px "+getCSS('--font-stack');
+    ctx.textAlign="left";
+    ctx.textBaseline="bottom";
+    const midx=(x1+x2)/2;
+    const midy=(y1+y2)/2;
+    ctx.fillText(label, midx+4, midy-2);
+    ctx.restore();
+  }
+
+  /************************************************************
+   * IMPACT VISUALS
+   ************************************************************/
+  function drawImpactArt(){
+    if(!state.impacted || !state.impactInfo) return;
+
+    const shockColor = getCSS('--shock');
+    const impactScr = worldToScreen(0, EARTH_RADIUS_KM);
+
+    ctx.save();
+    ctx.strokeStyle=shockColor;
+    ctx.lineWidth=1;
+    for(let r=200; r<=1000; r+=200){
+      ctx.beginPath();
+      ctx.arc(impactScr.x, impactScr.y, r*zoom, 0, Math.PI*2);
+      ctx.stroke();
+    }
+    ctx.restore();
+
+    // penetration annotation
+    const penDepth = state.impactInfo.penetrationDepthKm.toFixed(2);
+    const layerName = state.impactInfo.layerName;
+    const annotationPos = worldToScreen(NJ_HALF+300, EARTH_RADIUS_KM-200);
+
+    ctx.save();
+    ctx.fillStyle="#000";
+    ctx.font="11px "+getCSS('--font-stack');
+    ctx.textBaseline="top";
+    ctx.textAlign="left";
+
+    ctx.beginPath();
+    ctx.moveTo(impactScr.x, impactScr.y);
+    ctx.lineTo(annotationPos.x-5, annotationPos.y+5);
+    ctx.strokeStyle="#000";
+    ctx.lineWidth=1;
+    ctx.stroke();
+
+    ctx.fillText("Penetration depth: "+penDepth+" km", annotationPos.x, annotationPos.y);
+    ctx.fillText("Layer reached: "+layerName, annotationPos.x, annotationPos.y+14);
+    ctx.restore();
+  }
+
+  /************************************************************
+   * DISTANCE ANNOTATION LINE
+   ************************************************************/
+  function drawDistanceAnnotation(){
+    const earthScr = worldToScreen(0,0);
+    const njScr = worldToScreen(0,state.y_km);
+
+    ctx.save();
+    ctx.strokeStyle="#000";
+    ctx.lineWidth=1;
+    ctx.beginPath();
+    ctx.moveTo(earthScr.x, earthScr.y);
+    ctx.lineTo(njScr.x, njScr.y);
+    ctx.stroke();
+
+    ctx.fillStyle="#000";
+    ctx.font="11px "+getCSS('--font-stack');
+    ctx.textAlign="left";
+    ctx.textBaseline="top";
+ /* ctx.fillText("Distance to Earth center", njScr.x+5, njScr.y+5);*/
+
+    ctx.restore();
+  }
+
+  /************************************************************
+   * EARTH LAYER LABELS (screen-space divs for zoomed-in mode)
+   ************************************************************/
+  function updateEarthLayerLabels(){
+    const earthPxRadius = EARTH_RADIUS_KM * zoom;
+    const show = earthPxRadius>60;
+
+    placeLayerLabel(labelCrust,     CRUST_OUTER_R,      -10, show);
+    placeLayerLabel(labelMantle,    CRUST_INNER_R,      -10, show);
+    placeLayerLabel(labelOuterCore, MANTLE_INNER_R,     -10, show);
+    placeLayerLabel(labelInnerCore, OUTER_CORE_INNER_R, -10, show);
+
+    if(show){
+      const scrR = worldToScreen(EARTH_RADIUS_KM,0);
+      labelEarthR.style.display="block";
+      labelEarthR.style.left=(scrR.x+10)+"px";
+      labelEarthR.style.top=(scrR.y-10)+"px";
+    }else{
+      labelEarthR.style.display="none";
+    }
+  }
+
+  function placeLayerLabel(div, radiusKm, offsetY, show){
+    if(!show){
+      div.style.display="none";
+      return;
+    }
+    const scr = worldToScreen(0, radiusKm);
+    div.style.display="block";
+    div.style.left = (scr.x+10)+"px";
+    div.style.top = (scr.y+offsetY)+"px";
+  }
+
+  /************************************************************
+   * PHYSICS STEP
+   ************************************************************/
+  function physicsStep(dtSim){
+    if(state.impacted) return;
+
+    const r_km = state.y_km;
+    const r_m = r_km*1000;
+
+    // gravitational acceleration magnitude (m/s^2)
+    const a_mag = G * EARTH_MASS / (r_m*r_m);
+
+    // direction toward Earth center => negative y direction in our coords
+    const a_ms2 = -a_mag;
+
+    // integrate
+    state.v_ms += a_ms2*dtSim;       // m/s
+    const v_kms = state.v_ms/1000;   // km/s
+    state.y_km += v_kms*dtSim;       // km
+    state.elapsedSimTime += dtSim;   // s
+
+    // impact check
+    const bottom_km = state.y_km - NJ_HALF;
+    if(bottom_km <= EARTH_RADIUS_KM){
+      state.impacted = true;
+      computeImpactInfo();
+      impactCaption.style.display="block";
+      funnyAfterImpact.style.display="block";
+    }
+  }
+
+  function computeImpactInfo(){
+    const bottom_km = state.y_km - NJ_HALF;
+    const penetrationDepthKm = EARTH_RADIUS_KM - bottom_km;
+    const layerName = layerForRadius(bottom_km);
+    state.impactInfo = { penetrationDepthKm, layerName };
+  }
+
+  function layerForRadius(r_km){
+    // Which layer are we in at radius r_km from center?
+    if(r_km>CRUST_INNER_R && r_km<=CRUST_OUTER_R){
+      return "Crust";
+    }else if(r_km>MANTLE_INNER_R && r_km<=CRUST_INNER_R){
+      return "Mantle";
+    }else if(r_km>OUTER_CORE_INNER_R && r_km<=MANTLE_INNER_R){
+      return "Outer Core";
+    }else if(r_km>=INNER_CORE_INNER_R && r_km<=OUTER_CORE_INNER_R){
+      return "Inner Core";
+    }else{
+      return "Deep Interior";
+    }
+  }
+
+  /************************************************************
+   * CAMERA UPDATE
+   ************************************************************/
+  function updateCamera(){
+    // If the user has dragged the view at least once, stop auto-centering.
+    if(userPanned){
+      return;
+    }
+
+    const lerpFactor = 0.1;
+    if(!state.impacted){
+      const targetX = 0;
+      const targetY = state.y_km*0.5;
+      camX += (targetX - camX)*lerpFactor;
+      camY += (targetY - camY)*lerpFactor;
+    } else {
+      const targetX = 0;
+      const targetY = EARTH_RADIUS_KM + NJ_HALF*0.5;
+      camX += (targetX - camX)*lerpFactor;
+      camY += (targetY - camY)*lerpFactor;
+    }
+  }
+
+  /************************************************************
+   * RENDER LOOP
+   ************************************************************/
+  function render(){
+    ctx.clearRect(0,0,canvasW,canvasH);
+
+    drawGrid();
+    drawEarth();
+    drawEarthLayerLabelsOnCanvas(); // <- colored callouts matching legend
+    drawNewJerusalem();
+
+    const r_m = (state.y_km*1000);
+    const a_mag = G * EARTH_MASS / (r_m*r_m);
+    drawVectors(a_mag);
+
+    if(state.impacted){
+      drawImpactArt();
+    }
+
+    drawDistanceAnnotation();
+  }
+
+  /************************************************************
+   * READOUT
+   ************************************************************/
+  function updateReadout(){
+    const r_km = state.y_km;
+    const altitudeKm = r_km - EARTH_RADIUS_KM;
+    const speed_kms = Math.abs(state.v_ms)/1000;
+    const r_m = r_km*1000;
+    const g_ms2 = G * EARTH_MASS / (r_m*r_m);
+
+    rVal.textContent = r_km.toFixed(1);
+    altVal.textContent = altitudeKm.toFixed(1);
+    velVal.textContent = speed_kms.toFixed(4);
+    accVal.textContent = g_ms2.toFixed(4);
+    timeVal.textContent = state.elapsedSimTime.toFixed(1);
+  }
+
+  /************************************************************
+   * HOVER TOOLTIP
+   ************************************************************/
+  function updateHoverTooltip(){
+    checkMouseOverCube();
+    if(!mouseOverCube){
+      hoverTooltip.style.display="none";
+      return;
+    }
+    const r_km = state.y_km;
+    const r_m = r_km*1000;
+    const g_ms2 = G * EARTH_MASS / (r_m*r_m);
+    const speed_kms = Math.abs(state.v_ms)/1000;
+
+    hoverTooltip.style.display="block";
+    hoverTooltip.style.left = (mouseScreenX+12)+"px";
+    hoverTooltip.style.top = (mouseScreenY+12)+"px";
+    hoverTooltip.innerHTML =
+      "<b>New Jerusalem</b><br>"+
+      "Velocity: "+speed_kms.toFixed(4)+" km/s<br>"+
+      "Accel (toward Earth): "+g_ms2.toFixed(4)+" m/s²<br>"+
+      "Distance to center: "+r_km.toFixed(1)+" km";
+  }
+
+  function checkMouseOverCube(){
+    const left_km   = -NJ_HALF;
+    const top_km    = state.y_km - NJ_HALF;
+    const right_km  =  NJ_HALF;
+    const bottom_km = state.y_km + NJ_HALF;
+
+    const p1 = worldToScreen(left_km, top_km);
+    const p2 = worldToScreen(right_km, bottom_km);
+
+    const minX = Math.min(p1.x,p2.x);
+    const maxX = Math.max(p1.x,p2.x);
+    const minY = Math.min(p1.y,p2.y);
+    const maxY = Math.max(p1.y,p2.y);
+
+    mouseOverCube = (mouseScreenX>=minX && mouseScreenX<=maxX &&
+                     mouseScreenY>=minY && mouseScreenY<=maxY);
+  }
+
+  /************************************************************
+   * DRAG-TO-PAN EVENTS
+   ************************************************************/
+  canvas.addEventListener("mousedown",(e)=>{
+    isDragging = true;
+    dragStartScreenX = e.clientX;
+    dragStartScreenY = e.clientY;
+    dragStartCamX = camX;
+    dragStartCamY = camY;
+  });
+
+  window.addEventListener("mouseup",()=>{
+    isDragging = false;
+  });
+
+  canvas.addEventListener("mousemove",(e)=>{
+    mouseScreenX = e.clientX;
+    mouseScreenY = e.clientY;
+
+    if(isDragging){
+      userPanned = true;
+      const dx_px = e.clientX - dragStartScreenX;
+      const dy_px = e.clientY - dragStartScreenY;
+      camX = dragStartCamX - dx_px/zoom;
+      camY = dragStartCamY - dy_px/zoom;
+    }
+  });
+
+  /************************************************************
+   * ZOOM
+   ************************************************************/
+  canvas.addEventListener("wheel",(e)=>{
+    e.preventDefault();
+    const worldBefore = screenToWorld(e.clientX,e.clientY);
+
+    const wheelDir = (e.deltaY<0)?1:-1;
+    const zoomFactor = 1 + wheelDir*0.1;
+    zoom *= zoomFactor;
+    zoom = Math.max(0.0002, Math.min(zoom, 5));
+
+    const worldAfter = screenToWorld(e.clientX,e.clientY);
+    camX += (worldBefore.x - worldAfter.x);
+    camY += (worldBefore.y - worldAfter.y);
+  }, {passive:false});
+
+  /************************************************************
+   * CONTROLS
+   ************************************************************/
+  function togglePlay(){
+    state.running = !state.running;
+    playPauseBtn.textContent = state.running ? "Pause" : "Play";
+  }
+  playPauseBtn.addEventListener("click", togglePlay);
+
+  function restartSim(){
+    state.y_km = INITIAL_Y_KM;
+    state.v_ms = 0;
+    state.elapsedSimTime = 0;
+    state.running = false;
+    state.impacted = false;
+    state.impactInfo = null;
+
+    playPauseBtn.textContent="Play";
+    impactCaption.style.display="none";
+    funnyAfterImpact.style.display="none";
+
+    camX=0;
+    camY=INITIAL_Y_KM*0.5;
+    zoom=0.001;
+    userPanned=false; // let auto-centering resume
+  }
+  restartBtn.addEventListener("click", restartSim);
+
+  window.addEventListener("keydown",(e)=>{
+    if(e.code==="Space"){
+      e.preventDefault();
+      togglePlay();
+    }
+  });
+
+  /************************************************************
+   * MAIN LOOP
+   ************************************************************/
+  let lastTimeMs = performance.now();
+  function loop(nowMs){
+    const realDt = (nowMs - lastTimeMs)/1000;
+    lastTimeMs = nowMs;
+
+    const speedMult = parseFloat(speedSlider.value);
+
+    // quadratic boost + clamp to MAX_FRAME_DT
+	// Slow the sim speed, contol sim speed
+    let dtSim = BASE_DT * speedMult * speedMult * 0.3
+    if (dtSim > MAX_FRAME_DT) dtSim = MAX_FRAME_DT;
+
+    if(state.running){
+      physicsStep(dtSim);
+    }
+
+    updateCamera();
+    render();
+    updateReadout();
+    updateEarthLayerLabels();
+    updateHoverTooltip();
+
+    requestAnimationFrame(loop);
+  }
+  requestAnimationFrame(loop);
+
+  /************************************************************
+   * RESIZE
+   ************************************************************/
+  window.addEventListener("resize",()=>{
+    canvasW = window.innerWidth;
+    canvasH = window.innerHeight;
+    canvas.width = canvasW;
+    canvas.height = canvasH;
+  });
+
+  /************************************************************
+   * UTIL
+   ************************************************************/
+  function getCSS(varName){
+    return getComputedStyle(document.documentElement).getPropertyValue(varName).trim();
+  }
+
+})();
+</script>
+</body>
+</html>
