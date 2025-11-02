@@ -1,0 +1,381 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1.0" />
+<title>Earth vs New Jerusalem (True Scale)</title>
+<style>
+  :root {
+    --bg: #0f172a;
+    --earth: #1e40af;
+    --earth-outline: #93c5fd;
+    --cube: #facc15;
+    --cube-outline: #854d0e;
+    --line: #ffffff;
+    --text: #ffffff;
+    --panel-bg: rgba(15,23,42,0.6);
+    --panel-border: rgba(255,255,255,0.2);
+    --radius: 0.5rem;
+    --font: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI",
+            Roboto, "Helvetica Neue", Arial, sans-serif;
+  }
+
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--text);
+    font-family: var(--font);
+    overflow: hidden; /* canvas handles scrolling via zoom */
+  }
+
+  #uiPanel {
+    position: absolute;
+    top: 1rem;
+    left: 1rem;
+    background: var(--panel-bg);
+    border: 1px solid var(--panel-border);
+    border-radius: var(--radius);
+    padding: .75rem 1rem;
+    font-size: .8rem;
+    line-height: 1.4;
+    color: var(--text);
+    max-width: 260px;
+    backdrop-filter: blur(6px);
+  }
+
+  #uiPanel h1 {
+    margin: 0 0 .5rem 0;
+    font-size: .9rem;
+    font-weight: 600;
+    color: var(--text);
+  }
+
+  #uiPanel code {
+    font-family: ui-monospace, SFMono-Regular, Consolas, "Liberation Mono", monospace;
+    background: rgba(255,255,255,0.08);
+    padding: 0 .3rem;
+    border-radius: .3rem;
+    font-size: .75rem;
+  }
+
+  #hint {
+    margin-top:.5rem;
+    font-size:.7rem;
+    color:#cbd5e1;
+  }
+
+  canvas {
+    display: block;
+  }
+</style>
+</head>
+<body>
+<div id="uiPanel">
+  <h1>Earth vs “New Jerusalem” (True Scale)</h1>
+
+  <div><strong>Earth radius (Rₑ):</strong> 6,371 km</div>
+  <div><strong>Cube side (L):</strong> 2,220 km</div>
+  <div><strong>Cube height above surface:</strong> 2,220 km</div>
+
+  <div style="margin-top:.5rem;">
+    <strong>Zoom:</strong> <span id="zoomDisplay"></span>x<br/>
+    <strong>Pixels per 100 km:</strong> <span id="ppkDisplay"></span>
+  </div>
+
+  <div id="hint">
+    Scroll to zoom.<br/>
+    View is always to scale.<br/>
+    The cube is sitting on Earth's north pole.
+  </div>
+</div>
+
+<canvas id="c"></canvas>
+
+<script>
+(function() {
+  "use strict";
+
+  // === Physical constants (km) ======================================
+  const EARTH_RADIUS_KM = 6371;       // mean Earth radius
+  const CUBE_SIZE_KM    = 2220;       // New Jerusalem side length
+  // cube sits "on" the surface: bottom face tangent to Earth's radius at north pole
+
+  // === Canvas setup =================================================
+  const canvas = document.getElementById("c");
+  const ctx = canvas.getContext("2d");
+
+  function resizeCanvas() {
+    canvas.width  = window.innerWidth;
+    canvas.height = window.innerHeight;
+    draw();
+  }
+  window.addEventListener("resize", resizeCanvas);
+
+  // === Camera / zoom model ==========================================
+  // We'll render in "planet space" units of km.
+  // We'll center Earth at (0,0) in planet space. +y is up (north).
+  // We'll map km -> pixels by scale (pxPerKm), then shift to screen center.
+  //
+  // We want Earth to be nicely visible at default zoom. Let's pick a base
+  // scale that makes Earth radius ~250px initially.
+  //
+  // EARTH_RADIUS_KM * baseScale ≈ 250 px
+  // baseScale ≈ 250 / 6371 ≈ 0.0392 px/km
+
+  const baseScale = 250 / EARTH_RADIUS_KM; // px per km at zoom=1
+  let zoom = 1.0;                          // user-adjustable zoom factor
+  const MIN_ZOOM = 0.2;
+  const MAX_ZOOM = 20;
+
+  // For smooth scroll zoom
+  function onWheel(e) {
+    // zoom around pointer would be nice, but global zoom is fine for now
+    const zoomFactor = Math.exp(-e.deltaY * 0.001); // gentle exponential scaling
+    zoom *= zoomFactor;
+    if (zoom < MIN_ZOOM) zoom = MIN_ZOOM;
+    if (zoom > MAX_ZOOM) zoom = MAX_ZOOM;
+    draw();
+  }
+  canvas.addEventListener("wheel", onWheel, { passive: true });
+
+  function kmToPx(km) {
+    return km * baseScale * zoom;
+  }
+
+  // === Drawing helpers ==============================================
+
+  function drawEarth(cx, cy) {
+    const rPx = kmToPx(EARTH_RADIUS_KM);
+
+    // fill Earth
+    ctx.beginPath();
+    ctx.arc(cx, cy, rPx, 0, Math.PI * 2);
+    ctx.fillStyle = "rgba(30,64,175,1)"; // var(--earth) deep blue
+    ctx.fill();
+
+    // outline Earth
+    ctx.lineWidth = Math.max(1, rPx * 0.005);
+    ctx.strokeStyle = "rgba(147,197,253,1)"; // var(--earth-outline) light blue
+    ctx.stroke();
+
+    // add subtle latitude/longitude-ish reference lines for scale
+    ctx.save();
+    ctx.strokeStyle = "rgba(255,255,255,0.15)";
+    ctx.lineWidth = Math.max(1, rPx * 0.002);
+
+    // "longitude" lines (just 4 great circles implied)
+    for (let i=0; i<4; i++){
+      const ang = (Math.PI/2)*i;
+      ctx.beginPath();
+      // we'll draw as straight chords for simplicity (stylized)
+      const x1 = cx + rPx * Math.cos(ang);
+      const y1 = cy - rPx * Math.sin(ang);
+      const x2 = cx - rPx * Math.cos(ang);
+      const y2 = cy + rPx * Math.sin(ang);
+      ctx.moveTo(x1,y1);
+      ctx.lineTo(x2,y2);
+      ctx.stroke();
+    }
+
+    // "equator" line
+    ctx.beginPath();
+    ctx.moveTo(cx - rPx, cy);
+    ctx.lineTo(cx + rPx, cy);
+    ctx.stroke();
+
+    ctx.restore();
+
+    // label Earth radius
+    ctx.save();
+    ctx.strokeStyle = "white";
+    ctx.fillStyle = "white";
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    ctx.moveTo(cx, cy);
+    ctx.lineTo(cx, cy - rPx);
+    ctx.stroke();
+
+    ctx.beginPath();
+    ctx.arc(cx, cy, 4, 0, 2*Math.PI);
+    ctx.fill();
+
+    ctx.beginPath();
+    ctx.arc(cx, cy - rPx, 4, 0, 2*Math.PI);
+    ctx.fill();
+
+    ctx.font = `${12*zoom}px system-ui, sans-serif`;
+    ctx.textAlign = "left";
+    ctx.textBaseline = "middle";
+    ctx.fillText(`Rₑ = 6,371 km`, cx + 6, cy - rPx/2);
+    ctx.restore();
+  }
+
+  function drawCube(cx, cy) {
+    // The cube sits on Earth's "north pole".
+    // Earth's north pole point in our 2D is (0, Rₑ) but we draw y up,
+    // and screen y is down, so careful:
+    //
+    // In planet coords:
+    //   Earth center = (0,0)
+    //   North pole   = (0, +EARTH_RADIUS_KM)
+    //
+    // In screen coords:
+    //   screenY = cy - kmToPx(yPlanet)
+    //
+    // Cube bottom face should be tangent at north pole.
+    // We'll draw it as a simple 2D square (front view), width = L, height = L.
+    // We'll center it horizontally on x=0.
+    //
+    // bottom of cube in km:
+    const cubeHalf = CUBE_SIZE_KM/2; // half-width for centering in x
+    const bottomYkm = EARTH_RADIUS_KM;
+    const topYkm    = EARTH_RADIUS_KM + CUBE_SIZE_KM;
+
+    // Convert km -> px
+    const leftPx   = cx - kmToPx(cubeHalf);
+    const rightPx  = cx + kmToPx(cubeHalf);
+    const bottomPx = cy - kmToPx(bottomYkm);
+    const topPx    = cy - kmToPx(topYkm);
+
+    const wPx = rightPx - leftPx;
+    const hPx = bottomPx - topPx;
+
+    // draw fill
+    ctx.fillStyle = "rgba(250,204,21,0.8)"; // var(--cube) golden
+    ctx.fillRect(leftPx, topPx, wPx, hPx);
+
+    // outline
+    ctx.lineWidth = Math.max(1, wPx*0.01);
+    ctx.strokeStyle = "rgba(133,77,14,1)"; // darker outline
+    ctx.strokeRect(leftPx, topPx, wPx, hPx);
+
+    // label cube dimension (2,220 km)
+    ctx.save();
+    ctx.strokeStyle = "white";
+    ctx.fillStyle   = "white";
+    ctx.lineWidth   = 1;
+
+    // vertical measurement line to show "sticks out" height
+    ctx.beginPath();
+    ctx.moveTo(rightPx + 10, bottomPx);
+    ctx.lineTo(rightPx + 10, topPx);
+    ctx.stroke();
+
+    ctx.beginPath();
+    ctx.moveTo(rightPx + 6, bottomPx);
+    ctx.lineTo(rightPx + 14, bottomPx);
+    ctx.stroke();
+
+    ctx.beginPath();
+    ctx.moveTo(rightPx + 6, topPx);
+    ctx.lineTo(rightPx + 14, topPx);
+    ctx.stroke();
+
+    ctx.font = `${12*zoom}px system-ui, sans-serif`;
+    ctx.textAlign = "left";
+    ctx.textBaseline = "middle";
+    ctx.fillText(`2,220 km`, rightPx + 18, topPx + (hPx/2));
+
+    // title label "New Jerusalem"
+    ctx.font = `${14*zoom}px system-ui, sans-serif`;
+    ctx.textAlign = "center";
+    ctx.textBaseline = "bottom";
+    ctx.fillText(`"New Jerusalem" cube`, (leftPx+rightPx)/2, topPx - 6);
+
+    ctx.restore();
+  }
+
+  function drawInfoOverlay() {
+    // Update HUD panel text from current zoom.
+    const zoomEl = document.getElementById("zoomDisplay");
+    const ppkEl  = document.getElementById("ppkDisplay");
+
+    // px per 100 km just for intuition
+    const pxPer100km = kmToPx(100);
+
+    zoomEl.textContent = zoom.toFixed(2);
+    ppkEl.textContent  = pxPer100km.toFixed(1) + " px / 100 km";
+  }
+
+  function drawScaleBar(ctx, x, y) {
+    // little scale bar: 1000 km
+    const kmLen = 1000;
+    const pxLen = kmToPx(kmLen);
+
+    ctx.save();
+    ctx.strokeStyle = "white";
+    ctx.fillStyle   = "white";
+    ctx.lineWidth   = 2;
+
+    ctx.beginPath();
+    ctx.moveTo(x, y);
+    ctx.lineTo(x + pxLen, y);
+    ctx.stroke();
+
+    ctx.beginPath();
+    ctx.moveTo(x, y-5);
+    ctx.lineTo(x, y+5);
+    ctx.stroke();
+
+    ctx.beginPath();
+    ctx.moveTo(x + pxLen, y-5);
+    ctx.lineTo(x + pxLen, y+5);
+    ctx.stroke();
+
+    ctx.font = "12px system-ui, sans-serif";
+    ctx.textAlign = "center";
+    ctx.textBaseline = "top";
+    ctx.fillText(kmLen + " km", x + pxLen/2, y + 6);
+
+    ctx.restore();
+  }
+
+  // === Main draw =====================================================
+  function draw() {
+    const w = canvas.width;
+    const h = canvas.height;
+
+    ctx.clearRect(0,0,w,h);
+
+    // background gridlines (in screen space, purely visual aid)
+    ctx.save();
+    ctx.strokeStyle = "rgba(255,255,255,0.05)";
+    ctx.lineWidth = 1;
+    const gridStep = 50; // px
+    for (let gx = 0; gx < w; gx += gridStep){
+      ctx.beginPath();
+      ctx.moveTo(gx,0);
+      ctx.lineTo(gx,h);
+      ctx.stroke();
+    }
+    for (let gy = 0; gy < h; gy += gridStep){
+      ctx.beginPath();
+      ctx.moveTo(0,gy);
+      ctx.lineTo(w,gy);
+      ctx.stroke();
+    }
+    ctx.restore();
+
+    // screen center is Earth center
+    const cx = w/2;
+    const cy = h/2;
+
+    // Earth first (under cube)
+    drawEarth(cx, cy);
+
+    // Cube next
+    drawCube(cx, cy);
+
+    // scale bar in lower left corner
+    drawScaleBar(ctx, 40, h-60);
+
+    // update panel text
+    drawInfoOverlay();
+  }
+
+  // initial layout
+  resizeCanvas();
+})();
+</script>
+</body>
+</html>
